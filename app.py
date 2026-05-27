@@ -98,6 +98,42 @@ def _normalize_blank_lines(text: str) -> str:
     return _MULTI_BLANK_LINES_RE.sub("\n", text)
 
 
+# Collapses duplicated eSIM tokens like "eSim + eSIM" → "eSIM". Users sometimes
+# paste the same eSIM token twice ("eSim + eSIM", "esim/esim", "есим-есим"),
+# which the LLM reads as the "sim+esim" combo and labels PHYSICAL_PLUS_ESIM
+# when the correct answer is ESIM_ONLY_SINGLE.
+# Only collapses contiguous eSIM forms (esim, e-sim, есим, е-сим). Leaves
+# "e sim + esim" (internal space — treated as physical sim + esim) and
+# "sim + esim" (legitimate combo) alone.
+_DUP_ESIM_RE = re.compile(
+    r"\b(?:e-?sim|есим|е-?сим)\s*[+/\-]\s*(?:e-?sim|есим|е-?сим)\b",
+    re.IGNORECASE,
+)
+
+def _normalize_duplicated_esim(text: str) -> str:
+    """Collapse duplicate eSIM tokens like 'eSim + eSIM' → 'eSIM'."""
+    while True:
+        new = _DUP_ESIM_RE.sub("eSIM", text)
+        if new == text:
+            return new
+        text = new
+
+
+
+
+ # lowercase the whole input 
+def _lowercase_for_llm(text: str) -> str:
+    """Lowercase everything before sending to the LLM. Experimental — may hurt
+    proper-noun extraction (iPhone, Sierra Blue, (PRODUCT) RED) since these
+    appear in canonical casing in the model's training data."""
+    return text.lower()
+           
+
+
+
+
+
+
 # ── Pydantic models ───────────────────────────────────────────────────────────
 
 class EnrichedProduct(BaseModel):
@@ -286,21 +322,95 @@ _LLM_SEGMENT_SCHEMA = _pydantic_to_openai_strict_schema(LLMSegmentResponse, wrap
 # === END FIX 7 ===
 
 
-SEGMENT_PROMPT = """You are a text segmenter. Split the input into one chunk per product.
+# SEGMENT_PROMPT = """You are a text segmenter. Split the input into one chunk per product.
 
-RULES (strict):
-1. Each chunk MUST be copied VERBATIM from the input. Do NOT paraphrase, normalize, fix typos, or change spacing/casing/punctuation. Preserve emojis, Cyrillic letters (e.g. "Prо" with Cyrillic 'о'), spacing, and punctuation EXACTLY as written.
-2. Ignore order-status headers and metadata. Do NOT include them as segments. Examples of headers to ignore:
-   - "Заказ №..., Принят в обработку"
-   - "Выдача сегодня - 27 April 2026, 00:07"
-   - "🕗" date/time stamps
-   - Standalone notes like "отложи", "хорошо", "берём"
-3. If input contains exactly one product, return exactly one segment.
-4. If input contains no products (only headers, notes, conversational text), return {"segments": []}.
+# RULES (strict):
+# 1. Each chunk MUST be copied VERBATIM from the input. Do NOT paraphrase, normalize, fix typos, or change spacing/casing/punctuation. Preserve emojis, Cyrillic letters (e.g. "Prо" with Cyrillic 'о'), spacing, and punctuation EXACTLY as written.
+# 2. Ignore order-status headers and metadata. Do NOT include them as segments. Examples of headers to ignore:
+#    - "Заказ №..., Принят в обработку"
+#    - "Выдача сегодня - 27 April 2026, 00:07"
+#    - "🕗" date/time stamps
+#    - Standalone notes like "отложи", "хорошо", "берём"
+# 3. If input contains exactly one product, return exactly one segment.
+# 4. If input contains no products (only headers, notes, conversational text), return {"segments": []}.
 
-OUTPUT (strict JSON, no preamble, no markdown):
+# OUTPUT (strict JSON, no preamble, no markdown):
+# {"segments": ["chunk 1 verbatim", "chunk 2 verbatim", ...]}
+# """
+
+SEGMENT_PROMPT = """You are a text segmenter. Your only job is to split the input into chunks, one per product or note. You do NOT decide what is or isn't a product — that happens in a later step.
+
+═══ CORE PRINCIPLE ═══
+Every non-whitespace character of the input MUST appear in exactly one segment. You are partitioning the input, not filtering it. If you find yourself wanting to drop, skip, or omit something — DON'T. Include it as its own segment and let the next step decide.
+
+═══ PROCESSING ORDER ═══
+Walk the input from START to END in a single pass. Read it like a stream: process the first character, then the next, then the next, and so on until you reach the end. Do NOT jump around. Do NOT pick out obvious products first and come back for the rest. Do NOT reorder.
+
+The order of segments in your output MUST match the order they appear in the input. The first segment is whatever comes first in the input. The last segment is whatever comes last. No skipping forward, no skipping back.
+
+As you walk the input, ask at each line break: "Does the next chunk start here, or does it continue the current segment?" Decide using the SEGMENT BOUNDARIES rules below, then move on. Never look ahead beyond what those rules require.
+
+═══ RULES (strict) ═══
+
+1. VERBATIM COPYING
+   Each segment MUST be copied character-for-character from the input. Do NOT paraphrase, translate, normalize, fix typos, change casing, change spacing, or remove punctuation. Preserve emojis, flag characters, Cyrillic letters (including look-alikes like "Prо" where 'о' is Cyrillic), and all whitespace within a segment EXACTLY as written.
+
+2. NEVER OMIT
+   Do NOT drop any line, phrase, token, number, emoji, or word — not even headers, notes, dates, or text that looks meaningless. Everything goes into a segment. If a line looks like a note, header, agreement phrase, or junk, give it its own segment anyway. The next step decides whether it's a real product.
+
+3. SEGMENT BOUNDARIES
+   Segments are normally one full line each. Use these specific rules to decide where to cut:
+
+   3a. A trailing quantity suffix BELONGS TO THE LINE IT FOLLOWS.
+       Patterns like " - 2", " -3", " - 5 ", "-N" (a hyphen plus a small integer at the END of a line) are the quantity for that line's product. They MUST stay attached. NEVER split before such a suffix. NEVER start a new segment with a bare number that came from the previous line's tail.
+
+       CORRECT:   ["<model> <storage> <color> <flag> <price> - 2", "<model> <storage> <color> <flag> <price>"]
+       WRONG:     ["<model> <storage> <color> <flag> <price>", "- 2", "<model> <storage> <color> <flag> <price>"]
+       WRONG:     ["<model> <storage> <color> <flag> <price>", "2 <model> <storage> <color> <flag> <price>"]
+
+   3b. A segment must not be a BARE ORPHAN QUANTITY. A bare orphan is a segment whose entire content is just a small number, a hyphen-number, or "- N" with no product information attached. These are quantity tails that got severed from the product they belong to.
+
+       The test for any segment that STARTS with a number: does the rest of the segment contain product context — a storage size (GB / TB / ГБ / ТБ), a color word, a country/flag emoji, or a price (a large 4+ digit number)?
+         - YES → it's a real product line that legitimately starts with its model number. Keep it as-is.
+         - NO  → the segment is just an orphan quantity. You split wrong. Merge it back onto the previous segment.
+
+       Apply the same test if the segment starts with "- N" or "-N": if no product context follows, it's an orphan.
+
+   3c. Order headers and metadata get their OWN segments. Do not merge them with the product that follows. Examples:
+       - "Заказ №..., Принят в обработку"
+       - "Выдача сегодня - 27 April 2026, 00:07"
+       - "🕗 ..." date/time stamps
+
+   3d. Standalone notes get their OWN segments. Do not merge them with adjacent products. Examples:
+       - Agreement/intent: "хорошо", "ок", "го", "берём", "беру", "возьму", "возьму так", "возьму так."
+       - Deferral: "отложи", "отложите", "потом", "позже"
+
+4. ONE PRODUCT PER SEGMENT
+   Never merge two products into one segment. Never split one product across two segments. If a product spans two lines (e.g. specs on line A, "<qty> шт х <price> руб." on line B), include BOTH lines in the same segment.
+
+5. UNCERTAIN? OVER-SPLIT.
+   If you're unsure whether two adjacent lines belong together, return them as separate segments. Over-splitting is recoverable in the next step; merging is not.
+
+═══ SELF-CHECK BEFORE OUTPUTTING ═══
+
+Before returning, verify:
+  (a) Concatenating your segments back together (with newlines between them) reproduces the input with no loss. Every word, number, emoji, and punctuation mark from the input must appear in some segment.
+  (b) The segments appear in the same order as the input — segment[0] starts at the beginning of the input, segment[-1] ends at the end of the input, and no later segment refers to text that appears before an earlier segment.
+  (c) No segment is a bare orphan quantity — i.e. no segment consists only of a small number, "-N", or "- N" with no storage/color/flag/price following.
+  (d) The number of segments matches the number of distinct items (products + headers + notes) you can count in the input. If the input has 20 product lines and 1 header and 1 trailing note, you should produce 22 segments.
+
+If any check fails, fix the segmentation and re-check.
+
+═══ OUTPUT (strict JSON, no preamble, no markdown) ═══
+
 {"segments": ["chunk 1 verbatim", "chunk 2 verbatim", ...]}
 """
+
+
+
+
+
+
 
 
 SEGMENT_PROMPT_RETRY = """You are a text segmenter. The previous attempt failed. Be more careful.
@@ -815,7 +925,22 @@ async def _stage1_call(text: str, prompt: str) -> list[str]:
     return LLMSegmentResponse.model_validate(parsed).segments
 
 
+
+
 async def stage1_segment(text: str) -> list[str]:
+    """Wrapper that logs the final Stage 1 segments regardless of which path produced them."""
+    segments = await _stage1_segment_impl(text)
+    logger.info(
+        "── STAGE 1 RESULT ── %d segment(s):\n%s",
+        len(segments),
+        "\n".join(f"  [{i}] {s!r}" for i, s in enumerate(segments)) if segments else "  (none)",
+    )
+    return segments
+
+
+
+
+async def _stage1_segment_impl(text: str) -> list[str]:
     """
     LLM-based Stage 1 segmentation. Returns one verbatim per-product string per segment.
     Behavior matrix:
@@ -1157,6 +1282,14 @@ async def parse(
     # so every downstream step (LLM prompt, fallback splitlines, logs) sees the
     # cleaned input.
     text = _normalize_blank_lines(text)
+    text = _normalize_duplicated_esim(text)
+
+
+    # lowercase the llm input
+    text = _lowercase_for_llm(text)
+
+
+    
 
     _t0 = asyncio.get_event_loop().time()
     logger.info("\n" + "="*80)
