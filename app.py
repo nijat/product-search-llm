@@ -27,6 +27,7 @@ from pydantic import BaseModel, field_validator
 
 from sim_rules import SimCardType, resolve_sim_type
 from color_overrides import OVERRIDES as COLOR_OVERRIDES
+from macbook_models import is_known_part, remember_part, extract_part_candidates
 
 load_dotenv()
 
@@ -51,6 +52,7 @@ DB_POOL_MAX  = 10   # max connections in pool
 DB_TABLE              = "public.products"
 DB_COL_PRODUCT_LINE   = "product_type"
 DB_COL_MODEL_NAME     = "model"
+DB_COL_MODEL_NAME_CODE = "model_code"   # SKU / Apple part number column (e.g. "MW0Y3")
 DB_COL_CATEGORY       = "category"
 DB_COL_STORAGE        = "size"
 DB_COL_COUNTRY        = "country_code"
@@ -163,11 +165,7 @@ class EnrichedProduct(BaseModel):
     matched_color:    Optional[str] = None
 
 
-
-
-
-
-# === FIX 4 - (added): Step-1 contract — what the LLM produces. ============================
+# === FIX 4 (added): Step-1 contract — what the LLM produces. ============================
 # Why this exists separately from EnrichedProduct:
 #   * EnrichedProduct is the API OUTPUT contract — it includes downstream-computed fields
 #     (`simConflict`, `matched_color`) that the LLM never sees, and excludes the
@@ -464,7 +462,7 @@ Every object MUST have ALL fields listed below in EXACTLY this order. Never omit
 {
   "is_real_product":  true,   // boolean — true if this is a real product listing, false if it is a note/comment/instruction/non-product text
   "productName":      "...",  // Full constructed name: brand + line + model + storage + color. e.g. "iPhone 17 256GB Black" | null if not a real product
-  "model":            "...",  // iPhone: "16+" → "16 Plus" | "17" | "16 Pro" | "17 Pro Max" | "17 Air" | "17e" | "13 Mini" | "14 Plus" | iPad: "Mini 7" | "Air" | "Pro 13" | Other: "A56" | "S25 Ultra" | "Pro 14" | "Forerunner 55" | null if not determinable
+  "model":            "...",  // iPhone: "16+" → "16 Plus" | "17" | "16 Pro" | "17 Pro Max" | "17 Air" | "17e" | "13 Mini" | "14 Plus" | MacBook: "Air 13" | "Air 15" | "Pro 14" | "Pro 16" | iPad: "Mini 7" | "Air" | "Pro 13" | Other: "A56" | "S25 Ultra" | "Pro 14" | "Forerunner 55" | null if not determinable
   "size":             "...",  // Storage as <N>GB or <N>TB | null if not determinable
   "color_from_text":  "...",  // Raw color EXACTLY as user wrote it, any language — do NOT translate or normalize | null if not mentioned
   "quantity":         1,      // Positive integer, default 1, Cannot be Negative Number or Zero. If quantity is not mentioned, default to 1. If quantity is mentioned as part of a price (e.g. "31.5x4"), extract it and use it here, but do NOT modify the price field (keep it as the full price, e.g. "31.5x4" → quantity: 4, price: 31500). If quantity is preceded by a "-", don't include quantity as negative, just extract the number (e.g. "72600-2" → quantity: 2, price: 72600).
@@ -475,7 +473,7 @@ Every object MUST have ALL fields listed below in EXACTLY this order. Never omit
   "product_type":     "...",  // iPhone | MacBook | iPad | Galaxy | Watch | Forerunner | etc. | null if not a real product
   "category":         "...",  // phone | laptop | tablet | watch | earbuds | accessory | other | null if not a real product
   "variant":          "...",  // Pro | Plus | Ultra | Mini | Air | Max | SE | e | null
-  "model_code":       "...",  // SKU code: "MW2X3" | "SM-A520F" | null
+  "model_code":       "...",  // SKU code: "MW2X3" | "MDHD4" | "MDHA4" | "MHFH4" | "SM-A520F" | null
   "ram":              "...",  // RAM only if separate from storage: "8GB" | null
   "LLM_color_en":     "...",  // Color translated/normalized to English: "белый"→"White" | "синий"→"Blue" | null if no color
   "prod_year":        "...",  // Year if mentioned: "2024" | null
@@ -541,6 +539,7 @@ Samsung: "Galaxy A5 SM-A520F 3GB/32GB" → model:"A5", model_code:"SM-A520F", ra
 - model_code: hardware SKU only — "SM-A520F" | "MW2X3" | "MH9J4" | null if not present. Always separate from model.
 - size: storage only — "128GB" | "1TB". Never put RAM here.
 - ram: RAM only if explicitly separate from storage — "8GB" | null
+- ignore delivery/arrival timing notes — "к 2-3" | "к 3-5" | "к завтра" | "к пятнице" | "ETA 2-3" and similar mean expected arrival days; do NOT parse as quantity, price, or any field. Keep in requestedText as-is but extract no data from them.
 
 === EXAMPLES ===
 Input: "iPad Mini 7 128GB Space Gray Wi-Fi MXN63 35700"
@@ -557,6 +556,13 @@ Input: "17 Pro Max 1024 ГБ серебристый eSIM : 1 132 17 Pro Max 1024
 
 Input: "iPhone 17 256gb Black sim+esim\n65 отложи"
 [{"is_real_product":true,"productName":"iPhone 17 256GB Black","model":"17","size":"256GB","color_from_text":"Black","quantity":1,"price":0,"requestedText":"iPhone 17 256gb Black sim+esim","countryCode":null,"brand":"Apple","product_type":"iPhone","category":"phone","variant":null,"model_code":null,"ram":null,"LLM_color_en":"Black","prod_year":null,"simType":"PHYSICAL_PLUS_ESIM"},{"is_real_product":false,"productName":null,"model":null,"size":null,"color_from_text":null,"quantity":1,"price":0,"requestedText":"65 отложи","countryCode":null,"brand":null,"product_type":null,"category":null,"variant":null,"model_code":null,"ram":null,"LLM_color_en":null,"prod_year":null,"simType":null}]
+
+Input: "MacBook MW0Y3 Air 13 Starlight (M4, 16GB, 256GB) 2025 68500"
+[{"is_real_product":true,"productName":"MacBook Air 13 Starlight","model":"Air 13","size":"256GB","color_from_text":"Starlight","quantity":1,"price":68500,"requestedText":"MacBook MW0Y3 Air 13 Starlight (M4, 16GB, 256GB) 2025 68500","countryCode":null,"brand":"Apple","product_type":"MacBook","category":"laptop","variant":"Air","model_code":"MW0Y3","ram":"16GB","LLM_color_en":"Starlight","prod_year":"2025","simType":null}]
+
+Input: "Macbook Air 13\" (2026) M5 24 GB 1 TB SSD (MDH94) Silver (с СЗУ)  2 111500 к 2-3"
+[{"is_real_product":true,"productName":"MacBook Air 13 1TB Silver","model":"Air 13","size":"1TB","color_from_text":"Silver","quantity":2,"price":111500,"requestedText":"Macbook Air 13\" (2026) M5 24 GB 1 TB SSD (MDH94) Silver (с СЗУ)  2 111500 к 2-3","countryCode":null,"brand":"Apple","product_type":"MacBook","category":"laptop","variant":"Air","model_code":"MDH94","ram":"24GB","LLM_color_en":"Silver","prod_year":"2026","simType":null}]
+
 """
 
 # ── Step 2 color prompt ───────────────────────────────────────────────────────
@@ -753,6 +759,34 @@ async def fetch_official_colors(
     return [r["color"] for r in rows]
 
 
+async def macbook_part_in_db(
+    pool: asyncpg.Pool,
+    part_number: Optional[str],
+) -> bool:
+    """
+    Check public.products for whether a MacBook part number (model_code) exists.
+    Returns True if a matching laptop row is found, else False.
+
+    Matches the 5-char base case-insensitively and tolerant of the region suffix
+    (DB may store "MW0Y3", "MW0Y3LL/A", etc.) by comparing on the leading 5 chars.
+    """
+    if not part_number:
+        return False
+    base = part_number.strip().upper()
+    base = "".join(ch for ch in base.split("/")[0] if ch.isalnum())[:5]
+    if not base:
+        return False
+    async with pool.acquire() as conn:
+        row = await conn.fetchrow(f"""
+            SELECT 1
+            FROM   {DB_TABLE}
+            WHERE  upper(left(regexp_replace({DB_COL_MODEL_NAME_CODE}, '[^A-Za-z0-9]', '', 'g'), 5)) = $1
+              AND  category ILIKE 'laptop'
+            LIMIT 1
+        """, base)
+    return row is not None
+
+
 # ── Core pipeline steps ───────────────────────────────────────────────────────
 
 REQUIRED_FIELDS = ("model", "quantity", "price", "requestedText")  # kept for backward compat
@@ -773,6 +807,72 @@ def _is_iphone_dict(p: dict) -> bool:
         and "iphone" in (p.get("product_type") or "").lower()
         and (p.get("category") or "").lower() == "phone"
     )
+
+
+async def _confirm_part(
+    pool: asyncpg.Pool,
+    part_number: Optional[str],
+) -> bool:
+    """
+    Confirm a single part number is known: static set → DB → promote.
+      1. STATIC set (instant, no I/O).
+      2. On miss → DB membership check.
+      3. On DB hit → promote into the static set (read-through cache).
+    Returns True if known, False otherwise. Assumes `part_number` is already
+    shape-valid (caller checks). Does not translate to a model name.
+    """
+    if not part_number:
+        return False
+    if is_known_part(part_number):
+        return True
+    try:
+        found = await macbook_part_in_db(pool, part_number)
+    except Exception as e:
+        logger.error("MacBook DB lookup failed for %r: %s", part_number, e)
+        return False
+    if found:
+        remember_part(part_number)
+        logger.info("── MACBOOK ── %r → DB hit (promoted to static)", part_number)
+        return True
+    return False
+
+
+async def resolve_macbook_code(
+    pool: asyncpg.Pool,
+    llm_model_code: Optional[str],
+    requested_text: str,
+) -> Optional[str]:
+    """
+    Decide the authoritative model_code for a MacBook.
+
+    Rule: regex-extract part-number candidates from requested_text, confirm each
+    against the known set (static → DB, with promotion), and return the first
+    CONFIRMED code — it wins over the LLM whether the LLM was empty, agreed, or
+    disagreed. If no candidate is confirmed, return the LLM's model_code
+    unchanged (the fallback path; the LLM code may be a real-but-unlisted SKU).
+
+    Returns the value that should populate model_code (may equal llm_model_code).
+    """
+    candidates = extract_part_candidates(requested_text)
+    for cand in candidates:
+        if await _confirm_part(pool, cand):
+            if cand != (llm_model_code or "").strip().upper():
+                logger.info(
+                    "── MACBOOK ── confirmed model_code=%r from text (LLM had %r) — regex+set wins",
+                    cand, llm_model_code,
+                )
+            else:
+                logger.info("── MACBOOK ── confirmed model_code=%r (matches LLM)", cand)
+            return cand
+
+    # No confirmed match — keep the LLM's value (could be a real unlisted code).
+    logger.info(
+        "── MACBOOK ── no confirmed part number in text; keeping LLM model_code=%r",
+        llm_model_code,
+    )
+    return llm_model_code
+
+
 
 
 def _missing_required_single(p: dict) -> list[str]:
@@ -1237,6 +1337,13 @@ def _is_iphone(product: dict) -> bool:
     return brand == "apple" and "iphone" in line and category == "phone"
 
 
+def _is_macbook(product: dict) -> bool:
+    brand    = (product.get("brand") or "").lower()
+    line     = (product.get("product_type") or "").lower()
+    category = (product.get("category") or "").lower()
+    return brand == "apple" and "macbook" in line and category == "laptop"
+
+
 # ── FastAPI app ───────────────────────────────────────────────────────────────
 
 _pool: Optional[asyncpg.Pool] = None
@@ -1381,6 +1488,11 @@ async def parse(
                 )
             except Exception as e:
                 logger.error("Step 2 color match failed for %s: %s", p.requestedText, e)
+
+        # MacBook: prefer a part number confirmed from requestedText against the
+        # known set (static → DB → promote); else keep the LLM's model_code.
+        elif _is_macbook(raw):
+            p.model_code = await resolve_macbook_code(_pool, p.model_code, p.requestedText)
 
         return p
 

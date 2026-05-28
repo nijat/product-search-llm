@@ -14,6 +14,7 @@ COPY sim_rules.py .
 COPY color_overrides.py .
 COPY map_colors.py .
 COPY config.py .
+COPY macbook_models.py .
 
 EXPOSE 8000
 
