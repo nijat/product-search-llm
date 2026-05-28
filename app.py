@@ -163,7 +163,11 @@ class EnrichedProduct(BaseModel):
     matched_color:    Optional[str] = None
 
 
-# === FIX 4 (added): Step-1 contract — what the LLM produces. ============================
+
+
+
+
+# === FIX 4 - (added): Step-1 contract — what the LLM produces. ============================
 # Why this exists separately from EnrichedProduct:
 #   * EnrichedProduct is the API OUTPUT contract — it includes downstream-computed fields
 #     (`simConflict`, `matched_color`) that the LLM never sees, and excludes the
