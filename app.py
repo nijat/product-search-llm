@@ -130,7 +130,18 @@ def _lowercase_for_llm(text: str) -> str:
     return text.lower()
            
 
-
+def _strip_price_tail(requested_text: str, price: float) -> str:
+    """Remove only the price number from requestedText, leaving quantity and other tokens intact.
+    E.g. '15 plus 512gb yellow 🇯🇵 51100 - 1 !' → '15 plus 512gb yellow 🇯🇵 - 1 !'
+    Falls back to the original string if price is 0 or not found."""
+    if not price:
+        return requested_text
+    price_str = str(int(price))
+    idx = requested_text.find(price_str)
+    if idx == -1:
+        return requested_text
+    return (requested_text[:idx] + requested_text[idx + len(price_str):]).strip()
+           
 
 
 
@@ -519,8 +530,10 @@ If multiple prices appear, take the lowest one. e.g. "54500 1шт ? 54700" → p
 "15 256 black 10 53500 53.1" → price: 53100 (not 53500, because 53.1 likely means 53100 rubles)
 
 === REQUESTEDTEXT ===
-Keep exactly as the user wrote it — do NOT strip, clean, or modify anything.
 Copy the raw text for this segment as-is, including typos, Russian words, emojis, spacing.
+Exclude the price number. Keep everything else — model, storage, color, country flag, quantity, punctuation (e.g. "!").
+"15 Plus 512GB Yellow 🇯🇵 51100 - 1 !" → requestedText: "15 Plus 512GB Yellow 🇯🇵 - 1 !"
+"15 Plus 512GB Yellow 🇯🇵 51100-52000 - 1 !" → requestedText: "15 Plus 512GB Yellow 🇯🇵 - 1 !"
 
 === VARIANT ===
 model→variant: variant should contain non-numeric part of model
@@ -529,6 +542,8 @@ model→variant: variant should contain non-numeric part of model
 === MODEL RULES ===
 16E ≠ 16 (model: "16E"). PRO→Pro, PLUS→Plus, MAX→Max. N+→"N Plus": 15+→"15 Plus" | 16+→"16 Plus" | 17+→"17 Plus".
 iPhone 16Max → model: "16 Pro Max", variant: "Pro Max", not "16 Max". iPhone never releases a "Max" variant without "Pro". If "Max" is mentioned → always assume "Pro Max".
+"17 Pro" → model: "17 Pro" (NOT "17 Pro Max"). Only use "Pro Max" when "Max" is explicitly present in the text.
+If "Max" is mentioned without "Pro" → always assume "Pro Max" (e.g. "16 Max" → "16 Pro Max").
 "Air" alone → iPhone 17 Air (product_type: "iPhone", model: "17 Air").
 "Air 7"/"iPad Air" → iPad (product_type: "iPad", model: null).
 Samsung: "Galaxy A5 SM-A520F 3GB/32GB" → model:"A5", model_code:"SM-A520F", ram:"3GB", size:"32GB"
@@ -1462,6 +1477,10 @@ async def parse(
     async def enrich(raw: dict) -> EnrichedProduct:
         # Pydantic validation + field coercion
         p = EnrichedProduct.model_validate(raw)
+
+
+        # Strip price + quantity tail from requestedText
+        p.requestedText = _strip_price_tail(p.requestedText, p.price)
 
         # Resolve SIM type (iPhones only)
         if _is_iphone(raw):
