@@ -93,12 +93,11 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 # all blank lines entirely. Lines end up stacked directly on top of each other.
 # Why: the LLM tends to hallucinate when fed empty lines, treating the gap as
 # a structural break and inventing missing items.
-_MULTI_BLANK_LINES_RE = re.compile(r"(?:[ \t]*\n){2,}")
+# _MULTI_BLANK_LINES_RE = re.compile(r"(?:[ \t]*\n){2,}")
 
 def _normalize_blank_lines(text: str) -> str:
-    """Remove all blank/whitespace-only lines, leaving only a single \\n between content lines."""
-    return _MULTI_BLANK_LINES_RE.sub("\n", text)
-
+    """Remove all blank/whitespace-only lines from text."""
+    return "\n".join(line for line in text.splitlines() if line.strip())
 
 # Collapses duplicated eSIM tokens like "eSim + eSIM" → "eSIM". Users sometimes
 # paste the same eSIM token twice ("eSim + eSIM", "esim/esim", "есим-есим"),
