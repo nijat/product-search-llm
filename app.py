@@ -405,6 +405,25 @@ As you walk the input, ask at each line break: "Does the next chunk start here, 
        CORRECT:   input "привет\n17e 256gb white esim 🇺🇸 43400" → ["привет", "17e 256gb white esim 🇺🇸 43400"]
        WRONG:     input "привет\n17e 256gb white esim 🇺🇸 43400" → ["привет 17e 256gb white esim 🇺🇸 43400"]
        WRONG:     input "привет\n17e 256gb white esim 🇺🇸 43400" → ["17e 256gb white esim 🇺🇸 43400"]   (dropped the greeting)
+    
+    3e. INLINE GREETING + PRODUCT: If a line BEGINS with a greeting, name, or
+    small-talk phrase (see 3d list) AND is immediately followed on the SAME
+    line by product information (a model word like "iPhone" / "MacBook" /
+    "17e" / "15 Pro", a storage size GB/TB/ГБ/ТБ, a color word, a flag emoji,
+    or a 4+ digit price), split AT THE BOUNDARY between them. The greeting and
+    the product become TWO separate segments even though they share a line.
+
+    The boundary is: where the greeting/note text ends and product context
+    begins. Use the same product-context signals listed in rule 3b.
+
+    CORRECT:   "Привет 17e 256GB White eSim 🇺🇸 43400"
+               → ["Привет", "17e 256GB White eSim 🇺🇸 43400"]
+    CORRECT:   "Hello iPhone 15 Pro 256GB Black 80000"
+               → ["Hello", "iPhone 15 Pro 256GB Black 80000"]
+    CORRECT:   "Привет, как дела?"
+               → ["Привет, как дела?"]   (no product context; one segment)
+    WRONG:     "Привет 17e 256GB White eSim 🇺🇸 43400"
+               → ["Привет 17e 256GB White eSim 🇺🇸 43400"]   (failed to split)
 
 4. ONE PRODUCT PER SEGMENT
    Never merge two products into one segment. Never split one product across two segments. If a product spans two lines (e.g. specs on line A, "<qty> шт х <price> руб." on line B), include BOTH lines in the same segment.
