@@ -393,9 +393,18 @@ As you walk the input, ask at each line break: "Does the next chunk start here, 
        - "Выдача сегодня - 27 April 2026, 00:07"
        - "🕗 ..." date/time stamps
 
-   3d. Standalone notes get their OWN segments. Do not merge them with adjacent products. Examples:
+   3d. Standalone notes, greetings, and small talk get their OWN segments. Do not merge them with adjacent products, even when they share a line break with a product line. Examples:
        - Agreement/intent: "хорошо", "ок", "го", "берём", "беру", "возьму", "возьму так", "возьму так."
        - Deferral: "отложи", "отложите", "потом", "позже"
+       - Greetings / small talk: "привет", "приветствую", "здравствуйте", "здаров", "здарова", "доброе утро", "добрый день", "добрый вечер", "hi", "hello", "hey", "good morning", "good evening", "yo", "salam", "salam aleykum"
+       - Acknowledgments / short questions on their own line: "?", "ок?", "можно?", "сколько?", "есть?", "когда?"
+       - Names/handles on their own line: "Иван", "@username"
+
+       A line that contains ONLY a greeting, agreement word, name, or small-talk phrase is NEVER part of a product segment — even if a product line follows it immediately. The newline IS the boundary.
+
+       CORRECT:   input "привет\n17e 256gb white esim 🇺🇸 43400" → ["привет", "17e 256gb white esim 🇺🇸 43400"]
+       WRONG:     input "привет\n17e 256gb white esim 🇺🇸 43400" → ["привет 17e 256gb white esim 🇺🇸 43400"]
+       WRONG:     input "привет\n17e 256gb white esim 🇺🇸 43400" → ["17e 256gb white esim 🇺🇸 43400"]   (dropped the greeting)
 
 4. ONE PRODUCT PER SEGMENT
    Never merge two products into one segment. Never split one product across two segments. If a product spans two lines (e.g. specs on line A, "<qty> шт х <price> руб." on line B), include BOTH lines in the same segment.
@@ -492,6 +501,7 @@ Every object MUST have ALL fields listed below in EXACTLY this order. Never omit
                               //   "1sim"/"1сим"/"1 sim"/"1 сим" alone → "PHYSICAL_PLUS_ESIM"
                               //   if "sim" and "esim" mentioned together in any format → "PHYSICAL_PLUS_ESIM"
                               //   "esim"/"есим"/"только esim" alone → "ESIM_ONLY_SINGLE"
+                              //   "e sim"/"е сим"/"dual e sim"/"dual е сим" → "ESIM_ONLY_SINGLE"
                               //   "E-sim"/"e-sim"/"(E-sim)"/"Dual Esim"/"dual esim"/"2esim"/"2 esim" alone → "ESIM_ONLY_SINGLE"
                               //   "iPhone 17 Air" / "Айфон 17 Эйр" / "iPhone Air" → "ESIM_ONLY_SINGLE"
                               //   "2sim"/"2сим"/"2 sim"/"2 сим"/"dual sim"/"двойной сим"/"два сим" → "PHYSICAL_DUAL"
@@ -547,6 +557,14 @@ If "Max" is mentioned without "Pro" → always assume "Pro Max" (e.g. "16 Max" �
 "Air" alone → iPhone 17 Air (product_type: "iPhone", model: "17 Air").
 "Air 7"/"iPad Air" → iPad (product_type: "iPad", model: null).
 Samsung: "Galaxy A5 SM-A520F 3GB/32GB" → model:"A5", model_code:"SM-A520F", ram:"3GB", size:"32GB"
+
+=== simType ===
+- Before extracting simType, check whether the text contains eSIM indicators: the letter "e" immediately before sim/сим, optionally separated by whitespace (e.g., esim, e sim, e-sim, eсим, e сим, e-сим).
+    - If at least one eSIM indicator is present and no standalone physical sim/сим mention exists without the e prefix, set simType to "ESIM_ONLY_SINGLE".
+    - If both an eSIM indicator and a standalone physical sim/сим mention are present, set simType to "PHYSICAL_PLUS_ESIM".
+- "sim+esim"/"esim+sim"/"sim-esim"/"esim-sim"/"sim/esim"/"1sim"+"esim"/"сим"+"есим" → "PHYSICAL_PLUS_ESIM"
+- "e sim"/"е сим" → "ESIM_ONLY_SINGLE"
+- "dual e sim"/"dual е сим"/"dual esim"/"dual esim"/"dual eсим" → "ESIM_ONLY_DUAL"
 
 === FIELD NOTES ===
 - model: human-readable model id — "16 Pro" | "A5" | "Pro 14" | "Forerunner 55" | null if not determinable
@@ -635,6 +653,11 @@ async def _llm_call(
     # === END FIX 6 ===
     schema: Optional[dict] = None,
     schema_name: str = "product_array",
+    # OpenAI GPT-5 only. None = omit (preserves prior behavior for all other
+    # providers/callers). reasoning_effort enables the reasoning phase (Stage 1);
+    # top_p clamps sampling toward greedy for reproducibility (Stage 2).
+    reasoning_effort: Optional[str] = None,
+    top_p: Optional[float] = None,
 ) -> str:
     """
     Call the configured LLM provider (Anthropic or OpenAI).
@@ -642,7 +665,10 @@ async def _llm_call(
     """
     for attempt in range(4):
         try:
-            return await _llm_call_inner(system, user, max_tokens, cache, schema, schema_name)
+            return await _llm_call_inner(
+                system, user, max_tokens, cache, schema, schema_name,
+                reasoning_effort, top_p,
+            )
         except httpx.HTTPStatusError as e:
             if e.response.status_code in (429, 503, 529) and attempt < 3:
                 wait = 10 * (attempt + 1)
@@ -659,6 +685,8 @@ async def _llm_call_inner(
     cache: bool = False,
     schema: Optional[dict] = None,
     schema_name: str = "product_array",
+    reasoning_effort: Optional[str] = None,
+    top_p: Optional[float] = None,
 ) -> str:
     """Single attempt LLM call."""
     # === FIX 6 (default): if caller didn't pass a schema, use the product-array schema. ===
@@ -726,6 +754,14 @@ async def _llm_call_inner(
                         else {}
                     ),
                     # === END FIX 3 ===
+                    # Per-call tuning (GPT-5 only). Reasoning is used by Stage 1
+                    # (segmentation judgment); top_p is lowered by Stage 2 for
+                    # reproducible extraction. Note: on GPT-5 reasoning models
+                    # top_p may be rejected when reasoning is active, so callers
+                    # set one or the other, never both.
+                    **({"reasoning": {"effort": reasoning_effort}}
+                       if reasoning_effort else {}),
+                    **({"top_p": top_p} if top_p is not None else {}),
                     # "service_tier": "priority",  # Add this line to use the priority tier for faster responses
                 }
             else:
@@ -903,7 +939,7 @@ async def _extract_single(requested_text: str, is_iphone: bool, max_attempts: in
     fields = IPHONE_REQUIRED if is_iphone else NON_IPHONE_REQUIRED
     best = None
     for attempt in range(max_attempts):
-        raw = await _llm_call(EXTRACT_PROMPT, requested_text, max_tokens=1024, cache=False)
+        raw = await _llm_call(EXTRACT_PROMPT, requested_text, max_tokens=1024, cache=False, top_p=0.01)
         logger.info("── STEP 1 retry (attempt %d/%d) for %r ──\n%s", attempt + 1, max_attempts, requested_text[:60], raw)
         try:
             results = _parse_json_array(raw)
@@ -958,8 +994,13 @@ def _strip_order_headers(text: str) -> str:
     """Remove order-status header phrases anywhere in the input."""
     for pat in _HEADER_PHRASE_PATTERNS:
         text = pat.sub(" ", text)
-    # Collapse runs of whitespace caused by the substitutions
-    text = re.sub(r"\s{2,}", " ", text).strip()
+    # Collapse runs of HORIZONTAL whitespace (spaces/tabs) caused by the
+    # substitutions, but preserve newlines — line boundaries carry meaning
+    # downstream (Stage 1 segmentation depends on them to split a greeting/note
+    # from a product line). Then clean up any blank lines left from stripped
+    # headers, and trim leading/trailing whitespace on each line.
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = "\n".join(ln.strip() for ln in text.splitlines() if ln.strip())
     return text
 # === END FIX 1 ===
 
@@ -1027,10 +1068,11 @@ async def _stage1_call(text: str, prompt: str) -> list[str]:
     """One Stage 1 call. Raises on parse failure."""
     raw = await _llm_call(
         prompt, text,
-        max_tokens=4096,
+        max_tokens=8192,
         cache=False,
         schema=_LLM_SEGMENT_SCHEMA,
         schema_name="segments",
+        reasoning_effort="low",
     )
     # Parse — Stage 1 schema guarantees {"segments": [...]} shape, but defensively unwrap.
     if raw.startswith("```"):
@@ -1155,7 +1197,7 @@ async def _stage2_extract_batch(segments: list[str]) -> list[dict]:
     user_msg = "\n\n".join(segments)
     # === END FIX 8 ===
     try:
-        raw = await _llm_call(EXTRACT_PROMPT, user_msg, max_tokens=STAGE2_MAX_TOKENS, cache=True)
+        raw = await _llm_call(EXTRACT_PROMPT, user_msg, max_tokens=STAGE2_MAX_TOKENS, cache=True, top_p=0.01)
     except Exception as e:
         logger.error("Stage 2 batch extraction failed (size=%d): %s", len(segments), e)
         return []
@@ -1205,28 +1247,26 @@ async def step1_extract(text: str) -> list[dict]:
         return []
 
     # === FIX 6 (call site): two-stage extraction ===========================================
-    # Decide whether the input warrants Stage 1. If short/simple, skip it.
-    if _looks_multi_product(text):
-        logger.info("Stage 1 (segmentation) — input chars=%d", len(text))
-        segments = await stage1_segment(text)
+    # Stage 1 (segmentation) now runs UNCONDITIONALLY. The previous char/hint
+    # threshold skip glued noise (greetings, notes) to products on short inputs;
+    # the segmenter is the component built to separate them, so we always use it.
+    logger.info("Stage 1 (segmentation) — input chars=%d", len(text))
+    segments = await stage1_segment(text)
 
-        if len(segments) < 2 and _looks_multi_product(text):
-            # Stage 1 failed twice (segment + retry). Per the design decision: give up cleanly.
-            logger.error(
-                "Stage 1 failed: only %d segment(s) on input that looks multi-product (chars=%d). "
-                "Returning [] rather than guessing.",
-                len(segments), len(text),
-            )
-            return []
+    if len(segments) < 2 and _looks_multi_product(text):
+        # Stage 1 failed twice (segment + retry) on input that looks multi-product.
+        # Per the design decision: give up cleanly rather than guess.
+        logger.error(
+            "Stage 1 failed: only %d segment(s) on input that looks multi-product (chars=%d). "
+            "Returning [] rather than guessing.",
+            len(segments), len(text),
+        )
+        return []
 
-        if not segments:
-            # Stage 1 confidently said "no products" (e.g. just headers/notes)
-            logger.info("Stage 1: no products in input")
-            return []
-    else:
-        # Short/simple input — skip Stage 1, treat the whole input as one segment
-        logger.info("Stage 1 skipped (input chars=%d below threshold)", len(text))
-        segments = [text]
+    if not segments:
+        # Stage 1 confidently said "no products" (e.g. just headers/notes/greeting)
+        logger.info("Stage 1: no products in input")
+        return []
 
     # ── Stage 2: batched parallel extraction ────────────────────────────────────────────
     batches = [
