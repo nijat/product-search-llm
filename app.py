@@ -1091,7 +1091,7 @@ async def _stage1_call(text: str, prompt: str) -> list[str]:
         cache=False,
         schema=_LLM_SEGMENT_SCHEMA,
         schema_name="segments",
-        reasoning_effort="low",
+        reasoning_effort="none",
     )
     # Parse — Stage 1 schema guarantees {"segments": [...]} shape, but defensively unwrap.
     if raw.startswith("```"):
