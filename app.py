@@ -580,6 +580,7 @@ Samsung: "Galaxy A5 SM-A520F 3GB/32GB" → model:"A5", model_code:"SM-A520F", ra
 === simType ===
 - Before extracting simType, check whether the text contains eSIM indicators: the letter "e" immediately before sim/сим, optionally separated by whitespace (e.g., esim, e sim, e-sim, eсим, e сим, e-сим).
     - If at least one eSIM indicator is present and no standalone physical sim/сим mention exists without the e prefix, set simType to "ESIM_ONLY_SINGLE".
+    - If "dual esim" indicated, set simType to "ESIM_ONLY_SINGLE".
     - If both an eSIM indicator and a standalone physical sim/сим mention are present, set simType to "PHYSICAL_PLUS_ESIM".
 - "sim+esim"/"esim+sim"/"sim-esim"/"esim-sim"/"sim/esim"/"1sim"+"esim"/"сим"+"есим" → "PHYSICAL_PLUS_ESIM"
 - dual esim → "ESIM_ONLY_SINGLE"
@@ -611,6 +612,9 @@ Input: "17 Pro Max 1024 ГБ серебристый eSIM : 1 132 17 Pro Max 1024
 
 Input: "iPhone 17 256gb Black sim+esim\n65 отложи"
 [{"is_real_product":true,"productName":"iPhone 17 256GB Black","model":"17","size":"256GB","color_from_text":"Black","quantity":1,"price":0,"requestedText":"iPhone 17 256gb Black sim+esim","countryCode":null,"brand":"Apple","product_type":"iPhone","category":"phone","variant":null,"model_code":null,"ram":null,"LLM_color_en":"Black","prod_year":null,"simType":"PHYSICAL_PLUS_ESIM"},{"is_real_product":false,"productName":null,"model":null,"size":null,"color_from_text":null,"quantity":1,"price":0,"requestedText":"65 отложи","countryCode":null,"brand":null,"product_type":null,"category":null,"variant":null,"model_code":null,"ram":null,"LLM_color_en":null,"prod_year":null,"simType":null}]
+
+Input: "iPhone 17 Pro 256GB Blue Dual ESim  1 81300✔️"
+[{"is_real_product":true,"productName":"iPhone 17 Pro 256GB Blue","model":"17 Pro","size":"256GB","color_from_text":"Blue","quantity":1,"price":81300,"requestedText":"iPhone 17 Pro 256GB Blue Dual ESim  1","countryCode":null,"brand":"Apple","product_type":"iPhone","category":"phone","variant":"Pro","model_code":null,"ram":null,"LLM_color_en":"Blue","prod_year":null,"simType":"ESIM_ONLY_SINGLE"}]
 
 Input: "MacBook MW0Y3 Air 13 Starlight (M4, 16GB, 256GB) 2025 68500"
 [{"is_real_product":true,"productName":"MacBook Air 13 Starlight","model":"Air 13","size":"256GB","color_from_text":"Starlight","quantity":1,"price":68500,"requestedText":"MacBook MW0Y3 Air 13 Starlight (M4, 16GB, 256GB) 2025","countryCode":null,"brand":"Apple","product_type":"MacBook","category":"laptop","variant":"Air","model_code":"MW0Y3","ram":"16GB","LLM_color_en":"Starlight","prod_year":"2025","simType":null}]
