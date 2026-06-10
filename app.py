@@ -582,9 +582,12 @@ Samsung: "Galaxy A5 SM-A520F 3GB/32GB" → model:"A5", model_code:"SM-A520F", ra
     - If at least one eSIM indicator is present and no standalone physical sim/сим mention exists without the e prefix, set simType to "ESIM_ONLY_SINGLE".
     - If both an eSIM indicator and a standalone physical sim/сим mention are present, set simType to "PHYSICAL_PLUS_ESIM".
 - "sim+esim"/"esim+sim"/"sim-esim"/"esim-sim"/"sim/esim"/"1sim"+"esim"/"сим"+"есим" → "PHYSICAL_PLUS_ESIM"
-- "dual esim"/"dual eсим" → "ESIM_ONLY_SINGLE"
-- "e sim"/"е сим" → "ESIM_ONLY_SINGLE"
-- "dual e sim"/"dual е сим" → "ESIM_ONLY_SINGLE"
+- dual esim → "ESIM_ONLY_SINGLE"
+- dual eсим → "ESIM_ONLY_SINGLE"
+- dual e sim → "ESIM_ONLY_SINGLE" 
+- dual е сим → "ESIM_ONLY_SINGLE" 
+- "e sim" only → "ESIM_ONLY_SINGLE"
+- "е сим" only → "ESIM_ONLY_SINGLE"
 
 === FIELD NOTES ===
 - model: human-readable model id — "16 Pro" | "A5" | "Pro 14" | "Forerunner 55" | null if not determinable
